@@ -121,9 +121,10 @@ Shows, starts or stops the ACE Pro's filament dryer.
 $ kobra dry on --temp 50 --hours 4
 ACE 0: 31 C, dryer ON -> 50 C, 240 of 240 min left
 $ kobra dry off
+ACE 0: 31 C, dryer off
 ```
 
-`--temp` defaults to 50 C and `--hours` to 4. Typical settings are 45–50 C for PLA and 55 C for PETG. The dryer
+`--temp` defaults to 50 C (allowed 35–55, the most Anycubic quotes for the ACE Pro) and `--hours` to 4 (allowed 0.5–24). Typical settings are 45–50 C for PLA and 55 C for PETG. The dryer
 keeps running when a print starts.
 
 ### `kobra watch`
@@ -139,7 +140,7 @@ Anycubic's stock Kobra S1 profiles, which ship inside OrcaSlicer.
 **You don't need to install OrcaSlicer.** `kobra` finds one in this order:
 
 1. `--orca PATH` on the command line, or the `KOBRA_ORCA` environment variable. `PATH` can be an unpacked
-   OrcaSlicer folder (the one containing `AppRun`) or an OrcaSlicer `.AppImage` file, which `kobra` unpacks once.
+   OrcaSlicer folder (the one containing `AppRun`) or an OrcaSlicer `.AppImage` file (made executable with `chmod +x`), which `kobra` unpacks once into its cache.
 2. Otherwise, the first time you slice, `kobra` **downloads OrcaSlicer 2.4.2** itself:
    - the official Linux AppImage from
      [OrcaSlicer's GitHub releases](https://github.com/OrcaSlicer/OrcaSlicer/releases/tag/v2.4.2), for x86_64 or
@@ -211,5 +212,12 @@ runs but doesn't include.
 
 See [TODO.md](TODO.md): camera snapshots, dryer presets with a temperature limit, choosing the ACE Pro slot
 automatically, and a diagnostics dump for comparing firmware versions.
+
+
+## Development
+
+```sh
+python -m unittest      # offline tests: no printer, network or OrcaSlicer needed
+```
 
 Not affiliated with or endorsed by Anycubic. "Anycubic", "Kobra" and "ACE Pro" are Anycubic's trademarks.
