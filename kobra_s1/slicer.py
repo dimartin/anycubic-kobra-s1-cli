@@ -49,7 +49,11 @@ def find_orca(path=None):
         if os.path.isdir(path):
             return Orca(path)
         if path.endswith(".AppImage") and os.path.isfile(path):
-            return Orca(_unpack(path, os.path.join(CACHE, "orca-" + os.path.basename(path)[:-9])))
+            if not os.access(path, os.X_OK):
+                sys.exit(f"--orca: {path} isn't executable; run `chmod +x` on it first")
+            st = os.stat(path)       # key the unpack on size and mtime too, so a replaced file is unpacked again
+            key = f"orca-{os.path.basename(path)[:-9]}-{st.st_size}-{int(st.st_mtime)}"
+            return Orca(_unpack(path, os.path.join(CACHE, key)))
         sys.exit(f"--orca: {path} is neither an unpacked OrcaSlicer folder nor an .AppImage")
     return Orca(_download())
 
@@ -77,16 +81,18 @@ def _download():
         os.remove(img + ".part")
         sys.exit(f"OrcaSlicer download failed its checksum ({h.hexdigest()} != {want}); nothing was kept")
     os.replace(img + ".part", img)
-    root = _unpack(img, root)
-    os.remove(img)
-    return root
+    os.chmod(img, 0o755)
+    try:
+        return _unpack(img, root)
+    finally:
+        os.remove(img)
 
 
 def _unpack(img, root):
     """Unpack an AppImage (no FUSE needed) into root, once."""
     if os.path.isfile(os.path.join(root, "AppRun")):
         return root
-    os.chmod(img, 0o755)
+    os.makedirs(os.path.dirname(root), exist_ok=True)
     with tempfile.TemporaryDirectory(dir=os.path.dirname(root) or ".") as tmp:
         r = subprocess.run([os.path.abspath(img), "--appimage-extract"], cwd=tmp, capture_output=True, text=True)
         if r.returncode != 0:
@@ -101,7 +107,7 @@ def filament_profile(orca, material):
     d = os.path.join(orca.profiles, "filament")
     names = {f[:-5].split(" @")[0].removeprefix("Anycubic ").lower(): f
              for f in os.listdir(d) if f.endswith("@Anycubic Kobra S1 0.4 nozzle.json")}
-    m = (material or "PLA").strip().lower()
+    m = (material or "").strip().lower() or "pla"
     f = names.get(m) or names.get(m.split()[0]) or names["pla"]
     return os.path.join(d, f)
 
@@ -128,7 +134,7 @@ def resolved_profile(orca, overrides, kind="process", start=PROCESS):
         merged.update(j)
     merged.pop("inherits", None)
     merged.update({"name": "kobra-cli", "from": "User", "instantiation": "true",
-                   ("print_settings_id" if kind == "process" else "filament_settings_id"): "kobra-cli"})
+                   **({"print_settings_id": "kobra-cli"} if kind == "process" else {"filament_settings_id": ["kobra-cli"]})})
     merged.update(overrides)
     return merged
 

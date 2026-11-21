@@ -51,6 +51,7 @@ class Kobra:
         self.device_id = ""
         self.client = None
         self._connected = threading.Event()
+        self._connect_error = None
         self._waiters = {}          # msg type -> (Event, [payload])
         self._lock = threading.Lock()
         self.on_report = None
@@ -95,6 +96,8 @@ class Kobra:
         self.client = c
         if not self._connected.wait(8):
             sys.exit("could not connect to the printer's MQTT broker")
+        if self._connect_error:
+            sys.exit(f"the printer's MQTT broker refused the connection: {self._connect_error}")
 
     def close(self):
         if self.client:
@@ -102,6 +105,10 @@ class Kobra:
             self.client.disconnect()
 
     def _on_connect(self, client, userdata, flags, rc, properties=None):
+        if rc.is_failure:
+            self._connect_error = str(rc)
+            self._connected.set()
+            return
         client.subscribe(f"anycubic/anycubicCloud/v1/printer/+/{self.model_id}/{self.device_id}/#")
         self._connected.set()
 
@@ -112,7 +119,10 @@ class Kobra:
             return
         with self._lock:
             w = self._waiters.get(p.get("type"))
-        if w and p.get("action") in ("report", w[2]) and p.get("data") is not None:
+        # Replies don't echo our msgid. A reply carries the action it answers (getInfo, setDry, ...); a query is
+        # answered by a plain report, but for any other action a report is unrelated status and must not count.
+        if w and (p.get("action") == w[2] or (w[2] == "query" and p.get("action") == "report")) \
+                and p.get("data") is not None:
             w[1].append(p)
             w[0].set()
         if self.on_report:
@@ -138,8 +148,10 @@ class Kobra:
         return (r or {}).get("data") or {}
 
     def ace_slots(self):
-        """ACE Pro slots as [{index, status, type, color}], or [] when no ACE Pro is attached."""
+        """ACE Pro slots as [{index, status, type, color}], [] when no ACE Pro is attached, None on no reply."""
         r = self.command("multiColorBox", "getInfo", wait=5)
+        if r is None:
+            return None
         boxes = ((r or {}).get("data") or {}).get("multi_color_box") or []
         return [s for b in boxes for s in b.get("slots", [])]
 
@@ -196,10 +208,33 @@ def show_status(d):
 
 
 def show_slots(slots):
-    for s in slots:
+    if slots is None:
+        print("ACE Pro  : no reply")
+    for s in slots or []:
         c = s.get("color") or []
         hexc = "#%02x%02x%02x" % tuple(c[:3]) if len(c) >= 3 else "?"
         print(f"slot {s.get('index', 0) + 1} : {s.get('type') or '(empty)':12s} {hexc}")
+
+
+IDLE = ("free", "idle", "done", "finish", "stoped", "stopped")
+
+
+def check_idle(k):
+    """Exit unless the printer positively reports an idle state; no reply is not permission to print."""
+    st = k.status().get("state")
+    if st is None:
+        sys.exit("no status reply from the printer; not sending")
+    if st not in IDLE:
+        sys.exit(f"printer is busy (state: {st}); not sending")
+
+
+def bounded(kind, lo, hi):
+    def parse(v):
+        x = kind(v)
+        if not lo <= x <= hi:
+            raise argparse.ArgumentTypeError(f"must be between {lo} and {hi}")
+        return x
+    return parse
 
 
 def main():
@@ -238,8 +273,9 @@ def main():
         sub.add_parser(name)
     p = sub.add_parser("dry", help="ACE Pro filament dryer: show, start, or stop (`kobra dry off`)")
     p.add_argument("state", nargs="?", choices=("on", "off"), help="omit to show the dryer's state")
-    p.add_argument("--temp", type=int, default=50, help="target C (default %(default)s; PLA 45-50, PETG 55)")
-    p.add_argument("--hours", type=float, default=4, help="duration (default %(default)s)")
+    p.add_argument("--temp", type=bounded(int, 35, 55), default=50,
+                   help="target C, 35-55 (default %(default)s; PLA 45-50, PETG 55)")
+    p.add_argument("--hours", type=bounded(float, 0.5, 24), default=4, help="duration, 0.5-24 (default %(default)s)")
     a = ap.parse_args()
 
     if a.cmd == "slice":
@@ -254,6 +290,8 @@ def main():
     try:
         if a.cmd == "status":
             d = k.status()
+            if not d:
+                sys.exit("no status reply from the printer")
             if a.json:
                 print(json.dumps(d, indent=1))
             else:
@@ -267,10 +305,10 @@ def main():
         elif a.cmd in ("send", "start"):
             if not os.path.isfile(a.file):
                 sys.exit(f"no such file: {a.file}")
-            st = k.status().get("state")
-            if st not in (None, "free", "idle", "done", "finish", "stoped", "stopped"):
-                sys.exit(f"printer is busy (state: {st}); not sending")
+            check_idle(k)
             slots = k.ace_slots()
+            if slots is None:
+                sys.exit("no reply from the printer about the ACE Pro; not sending")
             slot_info = None
             if slots and a.slot is None:
                 show_slots(slots)
@@ -284,6 +322,7 @@ def main():
                 material = a.filament or (slot_info or {}).get("type") or "PLA"
                 a.file = slice_model(a.file, os.path.splitext(a.file)[0] + ".gcode", material, a.walls, a.infill,
                                      temp=a.temp, retract=a.retract, orca_path=a.orca)
+                check_idle(k)       # slicing can take a while; someone may have started a print meanwhile
             name, size = os.path.basename(a.file), os.path.getsize(a.file)
             if a.cmd == "send":
                 print(f"uploading {name} ({size / 1e6:.1f} MB) ...", flush=True)
@@ -292,16 +331,30 @@ def main():
                 if a.no_start:
                     return
             r = k.start(name, size, md5_file(a.file), level=not a.no_level, slot=a.slot, slot_info=slot_info)
-            if r is None:
-                print("start command sent (no reply yet) - check `kobra status` or the printer screen")
+            if r is not None and r.get("code") not in (None, 200):
+                sys.exit(f"printer refused the print: {r.get('state', '')} {r.get('msg', '')}".strip())
+            # The printer doesn't always answer a start directly, so confirm from its state instead.
+            for _ in range(10):
+                st = k.status().get("state")
+                if st and st not in IDLE:
+                    print(f"print started (printer state: {st})")
+                    break
+                time.sleep(2)
             else:
-                print(f"printer replied: {r.get('state', '')} {r.get('msg', '')}".strip())
+                print("start command sent, but the printer hasn't reported starting - check `kobra status` or its screen")
         elif a.cmd == "dry":
             if a.state:     # verified on hardware 2026-11-20: duration is minutes, the reply echoes drying_status
                 ds = {"status": 1, "target_temp": a.temp, "duration": int(a.hours * 60)} if a.state == "on" else \
                      {"status": 0, "target_temp": 0, "duration": 0}
-                k.command("multiColorBox", "setDry", {"multi_color_box": [{"id": 0, "drying_status": ds}]}, wait=8)
-            r = k.command("multiColorBox", "getInfo", wait=5)
+                r = k.command("multiColorBox", "setDry", {"multi_color_box": [{"id": 0, "drying_status": ds}]}, wait=8)
+                if r is None:
+                    sys.exit("no reply from the printer to the dryer command; check `kobra dry`")
+                if r.get("code") not in (None, 200):
+                    sys.exit(f"printer refused the dryer command: {r.get('state', '')} {r.get('msg', '')}".strip())
+            else:       # after a change, show the setDry reply: a getInfo sent straight after it answers with the old state
+                r = k.command("multiColorBox", "getInfo", wait=5)
+            if r is None:
+                sys.exit("no reply from the printer about the ACE Pro")
             for b in ((r or {}).get("data") or {}).get("multi_color_box") or []:
                 d = b.get("drying_status") or {}
                 state = f"ON -> {d.get('target_temp')} C, {d.get('remain_time')} of {d.get('duration')} min left" \
