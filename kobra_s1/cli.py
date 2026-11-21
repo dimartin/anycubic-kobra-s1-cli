@@ -228,6 +228,11 @@ def check_idle(k):
         sys.exit(f"printer is busy (state: {st}); not sending")
 
 
+def refusal(r):
+    """Describe a printer's non-200 reply; the code is always there even when state and msg are empty."""
+    return " ".join(str(x) for x in (f"code {r.get('code')}", r.get("state"), r.get("msg")) if x)
+
+
 def bounded(kind, lo, hi):
     def parse(v):
         x = kind(v)
@@ -332,7 +337,7 @@ def main():
                     return
             r = k.start(name, size, md5_file(a.file), level=not a.no_level, slot=a.slot, slot_info=slot_info)
             if r is not None and r.get("code") not in (None, 200):
-                sys.exit(f"printer refused the print: {r.get('state', '')} {r.get('msg', '')}".strip())
+                sys.exit(f"printer refused the print: {refusal(r)}")
             # The printer doesn't always answer a start directly, so confirm from its state instead.
             for _ in range(10):
                 st = k.status().get("state")
@@ -350,7 +355,7 @@ def main():
                 if r is None:
                     sys.exit("no reply from the printer to the dryer command; check `kobra dry`")
                 if r.get("code") not in (None, 200):
-                    sys.exit(f"printer refused the dryer command: {r.get('state', '')} {r.get('msg', '')}".strip())
+                    sys.exit(f"printer refused the dryer command: {refusal(r)}")
             else:       # after a change, show the setDry reply: a getInfo sent straight after it answers with the old state
                 r = k.command("multiColorBox", "getInfo", wait=5)
             if r is None:

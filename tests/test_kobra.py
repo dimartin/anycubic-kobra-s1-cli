@@ -9,6 +9,9 @@ import types
 import unittest
 from unittest import mock
 
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.reasoncodes import ReasonCode
+
 from kobra_s1 import cli, slicer
 
 
@@ -69,9 +72,15 @@ class Guards(unittest.TestCase):
 
     def test_connect_failure_is_reported(self):
         k = cli.Kobra("printer.invalid")
-        k._on_connect(None, None, None, types.SimpleNamespace(is_failure=True, __str__=lambda s: "Not authorized"))
+        client = mock.Mock()
+        k._on_connect(client, None, None, ReasonCode(PacketTypes.CONNACK, "Not authorized"))
         self.assertTrue(k._connected.is_set())
-        self.assertTrue(k._connect_error)
+        self.assertEqual(k._connect_error, "Not authorized")
+        client.subscribe.assert_not_called()
+
+    def test_refusal_always_names_the_code(self):
+        self.assertEqual(cli.refusal({"code": 500}), "code 500")
+        self.assertEqual(cli.refusal({"code": 403, "state": "failed", "msg": "busy"}), "code 403 failed busy")
 
     def test_dryer_bounds(self):
         temp = cli.bounded(int, 35, 55)
