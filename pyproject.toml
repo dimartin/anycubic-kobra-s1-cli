@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anycubic-kobra-s1"
+version = "0.1.0"
+description = "Command-line control for the Anycubic Kobra S1 and ACE Pro over LAN: send G-code, slice STL, watch prints, run the filament dryer. No cloud, stock firmware."
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = ["requests", "paho-mqtt>=2", "cryptography"]
+keywords = ["anycubic", "kobra s1", "kobra", "ace pro", "3d printer", "lan mode", "mqtt", "orcaslicer", "gcode", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Printing",
+]
+
+[project.urls]
+Homepage = "https://github.com/dimartin/anycubic-kobra-s1-cli"
+Issues = "https://github.com/dimartin/anycubic-kobra-s1-cli/issues"
+
+[project.scripts]
+kobra = "kobra_s1.cli:main"
+
+[tool.setuptools]
+packages = ["kobra_s1"]
